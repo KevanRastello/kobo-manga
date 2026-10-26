@@ -101,7 +101,8 @@ jobs:
             python "$RUNNER_TEMP/kcc/kcc-c2e.py" $KCC_FLAGS -o "$PWD/kcc_out" "$cbz"
             epub=$(find kcc_out -name '*.kepub.epub' | head -1)
             python tools/metadata.py calibre "$epub"
-            mv "$epub" out/
+            # KCC turns ' and ! into _ in its output name; keep the downloader's name instead.
+            mv "$epub" "out/$(basename "$cbz" .cbz).kepub.epub"
           done < <(find "$PWD/raw" -name '*.cbz' -print0)
           find out -type f -printf '::notice::converted %f (%s bytes)\n'
 
