@@ -52,6 +52,8 @@ jobs:
             exit 1
           fi
           cat dl.log
+          echo "::notice title=manga-downloader output::$(tail -c 3000 dl.log | sed ':a;N;$!ba;s/\n/%0A/g')"
+          mkdir -p raw
           find raw -type f -printf '::notice::downloaded %f\n'
 
       - name: Convert for Kobo Elipsa 2E
