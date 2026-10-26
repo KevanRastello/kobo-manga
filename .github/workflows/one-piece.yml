@@ -65,6 +65,10 @@ jobs:
           if ! manga-downloader "$MANGAPLUS_TITLE" "$start-99999" --language en \
                -o "$PWD/raw" -t "One Piece {{.Number}}" > dl.log 2>&1; then
             cat dl.log
+            if grep -q "No chapters found for the specified ranges" dl.log; then
+              echo "::notice::No new chapter this time (break week, or not released yet)"
+              exit 0
+            fi
             echo "::error title=manga-downloader failed::$(tail -c 3000 dl.log | sed ':a;N;$!ba;s/\n/%0A/g')"
             exit 1
           fi
@@ -81,7 +85,6 @@ jobs:
             mv kcc_out/*.kepub.epub "out/$name.kepub.epub"
           done < <(find "$PWD/raw" -name '*.cbz' -print0)
           find out -type f -printf '::notice::converted %f (%s bytes)\n'
-          [ -n "$(ls out)" ] || echo "::notice::No new chapter this time (break week, or not released yet)"
 
       - name: Upload to Google Drive
         run: |
