@@ -7,7 +7,7 @@ on:
   workflow_dispatch:       # "Run workflow" button in the Actions tab
     inputs:
       chapters:
-        description: "Redo these chapters (e.g. 1190-1196). Empty = only new chapters. Old copies are moved to OP/_old"
+        description: "Redo these chapters (e.g. 1190-1196). Empty = only new chapters. Old copies go to the Drive trash"
         required: false
         default: ""
 
@@ -109,17 +109,18 @@ jobs:
         run: |
           set -o pipefail
           if [ -n "$REDO" ]; then
-            # Move older copies of the same chapters (other names) to OP/_old, then upload (overwrite).
+            # Upload first (overwrite), then remove older copies of the same chapters under other
+            # names. rclone sends them to the Google Drive trash (recoverable for 30 days).
+            rclone copy out gdrive: -v 2>&1 | tee rclone.log
             rclone lsf gdrive: --files-only > drive.txt
             for f in out/*.kepub.epub; do
               new=$(basename "$f")
               n=$(grep -oP '^One Piece \K\d+' <<< "$new")
               grep -P "^(?:One Piece|Chapter) $n(?:[ _.]|$)" drive.txt | grep -vxF "$new" | while IFS= read -r old; do
-                rclone moveto "gdrive:$old" "gdrive:_old/$old"
-                echo "::notice::moved old copy to _old: $old"
+                rclone deletefile "gdrive:$old"
+                echo "::notice::trashed old copy: $old"
               done || true   # no old copy = grep finds nothing, which is fine
             done
-            rclone copy out gdrive: -v 2>&1 | tee rclone.log
           else
             rclone copy out gdrive: --ignore-existing -v 2>&1 | tee rclone.log
           fi

@@ -113,7 +113,7 @@ Each run's summary page (Actions → click the run) lists short **notices**, for
 Actions → **One Piece weekly** → **Run workflow** → in the box **"Redo these chapters"** type a number or range, for example `1196` or `1190-1195` → **Run workflow**.
 
 - Those chapters are downloaded again and converted with the current settings and metadata.
-- Any older copy of the same chapter, under another name (for example `Chapter 1195_ Veakness.kepub.epub` from Suwayomi), is **moved** to `OP/_old`. **Nothing is deleted**; empty `_old` yourself once you're happy.
+- Any older copy of the same chapter, under another name (for example `Chapter 1195_ Veakness.kepub.epub` from Suwayomi), is removed **after** the new file is uploaded. It goes to the **Google Drive trash**, where it stays recoverable for 30 days.
 - A copy with exactly the same name is overwritten.
 - Leave the box empty for a normal run (new chapters only).
 - On the Kobo, delete the old copy from the library and download the new file again.
@@ -205,7 +205,7 @@ rclone copy out gdrive: --ignore-existing
 - rclone is configured entirely through `RCLONE_CONFIG_GDRIVE_*` environment variables, so no config file is needed.
 - `ROOT_FOLDER_ID` points directly at the `Mangas/OP` folder (ID `1MLbtZhi0npGdKBkvJApSc_rJxz6vi9if`), so `gdrive:` means "inside OP".
 - `--ignore-existing` skips a file whose name already exists in Drive. This is a second safety net on top of step 2.
-- In redo mode, older copies of the redone chapters are first moved to `OP/_old` with `rclone moveto`, then the new files are uploaded, overwriting any copy with the same name.
+- In redo mode, the new files are uploaded first, overwriting any copy with the same name. Then older copies of the redone chapters, under other names, are removed with `rclone deletefile`, which sends them to the Drive trash.
 - The Drive folder itself is the system's only "memory": no database, no state file.
 
 ---
@@ -223,7 +223,7 @@ rclone copy out gdrive: --ignore-existing
 | **Two runs a week** | Covers delayed releases; a break week costs ~3 minutes | Running every hour |
 | **Metadata from the file name** | The downloader names the file `One Piece <n> - <title>` but writes no metadata file, so the name is the one reliable source | Typing metadata by hand; Calibre (a large GUI app) |
 | **Spreads: `-r 2` (split + rotated)** | With the old `-r 0`, a spread was only shown as two halves, cutting the drawing in the middle. Now the halves keep reading smooth, and the rotated full page shows the spread whole | `-r 1` (rotated only: you'd turn the Kobo for every spread); `-r 0` (halves only) |
-| **Redo moves old files to `_old`, never deletes** | Reversible; you decide when to empty it | Deleting old copies |
+| **Redo: upload first, then trash old copies** | No clutter in `OP`, and nothing is lost if the upload fails. The Drive trash keeps old copies for 30 days | Moving them to an `OP/_old` folder (used at first, dropped on request: one more folder to clean by hand) |
 | **manga-downloader**, not `mloader` | MANGA Plus now gives the chapter list only to registered app clients. `mloader` (v1.1.12) doesn't register, so it got **zero chapters** and still exited "successfully". That was the cause of the first failed run on 2026-10-25. manga-downloader registers an anonymous device automatically and is actively maintained | `mloader` |
 
 Quirks found while testing, which are already handled in the workflow:
