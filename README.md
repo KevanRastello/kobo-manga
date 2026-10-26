@@ -11,7 +11,7 @@ Every Sunday, GitHub Actions:
 and the Kobo picks it up from Google Drive.
 
 ```
-MANGA Plus ──mloader──▶ chapter.cbz ──KCC──▶ One Piece 1180.kepub.epub ──rclone──▶ Drive: Mangas/OP ──▶ Kobo
+MANGA Plus ──manga-downloader──▶ chapter.cbz ──KCC──▶ One Piece 1180.kepub.epub ──rclone──▶ Drive: Mangas/OP ──▶ Kobo
 ```
 
 Everything is in one file: [`.github/workflows/one-piece.yml`](.github/workflows/one-piece.yml).
@@ -98,7 +98,7 @@ sign in, go to `Mangas/OP` and download the chapter.
 |---|---|
 | New chapter is out | Uploaded as `One Piece <n>.kepub.epub` |
 | Break week, or chapter already in Drive | Run is green, nothing is uploaded |
-| Chapter not free / MANGA Plus or mloader broken / token expired | Run goes **red** and GitHub **emails you** |
+| No free chapter / MANGA Plus or downloader broken / token missing or expired | Run goes **red** and GitHub **emails you** |
 
 **Cost:** about 3–5 Actions minutes per run, around 30 minutes a month. Private repos get 2,000 free minutes a month.
 
@@ -112,20 +112,23 @@ The workflow runs on a fresh Ubuntu machine that GitHub lends you for a few minu
 
 | Tool | What it is for |
 |---|---|
-| `p7zip-full` | Unzipping archives; KCC needs it to open `.cbz` files |
+| `7zip` | Unzipping archives; KCC needs it to open `.cbz` files |
 | `rclone` | Uploading to Google Drive |
-| [`mloader`](https://pypi.org/project/mloader/) | Downloading chapters from MANGA Plus |
+| [`manga-downloader`](https://github.com/elboletaire/manga-downloader) (latest release) | Downloading chapters from MANGA Plus. It always takes the newest release, because scrapers need fixes quickly when a site changes |
 | [KCC](https://github.com/ciromattia/kcc) `v12.1.1` | Converting the comic for the e-reader. Pinned to a release so an update can't silently break it |
 | `PySide6-Essentials` | KCC's command-line tool still imports one piece of its GUI library, so it is needed even without a screen |
 
-### Step 2: Download the latest chapter
+### Step 2: Download the free chapters
 
 ```bash
-mloader https://mangaplus.shueisha.co.jp/titles/100020 --last -o raw
+manga-downloader https://mangaplus.shueisha.co.jp/titles/100020 1100-99999 --language en -o raw -t "One Piece {{.Number}}"
 ```
 
-`100020` is One Piece (English) on MANGA Plus, and `--last` means "only the newest chapter".
-The result is a file like `raw/One Piece/One Piece - d1180 (web) [Unknown].cbz`. A `.cbz` is just a zip of page images.
+- `100020` is One Piece on MANGA Plus, and `--language en` picks the English edition.
+- `1100-99999` asks for every chapter from 1100 up. MANGA Plus only gives the **newest ~3 chapters** for free, so those are the only ones that download. Locked chapters are skipped.
+  Asking for a range instead of only "the last one" means a missed week catches up by itself. Duplicates are avoided at upload (step 4).
+- MANGA Plus only answers the full chapter list to a registered app. manga-downloader registers an **anonymous device** by itself on each run, so no account is needed.
+- `-t` sets the file name, which gives files like `raw/One Piece 1180.cbz`. A `.cbz` is just a zip of page images.
 
 ### Step 3: Convert for the Elipsa 2E
 
@@ -142,8 +145,9 @@ kcc-c2e.py -p KoE -m -u -f EPUB -r 0 -t "One Piece 1180" -o kcc_out "<file>.cbz"
 | `-r 0` | Double-page spreads are **split** into two pages. See [To fix](#7-to-fix-open-items) |
 | `-t` | Book title shown on the Kobo |
 
-The chapter number is read from mloader's file name (`d1180` → `1180`), and the result is renamed to `One Piece 1180.kepub.epub`.
+Each `One Piece <n>.cbz` becomes `One Piece <n>.kepub.epub`.
 If no `.cbz` was downloaded, the step stops with an error. That way a silent failure can't look like success.
+Each step also writes short **notices** (downloaded / converted / uploaded files). They appear on the run's summary page.
 
 ### Step 4: Upload to Drive
 
@@ -161,7 +165,7 @@ rclone copy out gdrive: --ignore-existing
 
 | Decision | Why | Alternative considered |
 |---|---|---|
-| **MANGA Plus** as the source | Official and free for the newest chapters, and `mloader` is a single command | **Suwayomi** (used on the PC). It is a full server (Java, extensions, a query API), heavy and fragile to start on every run. Its MANGA Plus extension uses the same source anyway. Pirate sources were rejected (legality, and GitHub can disable repos used for piracy) |
+| **MANGA Plus** as the source | Official and free for the newest chapters, and `manga-downloader` is a single command | **Suwayomi** (used on the PC). It is a full server (Java, extensions, a query API), heavy and fragile to start on every run. Its MANGA Plus extension uses the same source anyway. Pirate sources were rejected (legality, and GitHub can disable repos used for piracy) |
 | **GitHub Actions** | Free minutes, runs while the PC is off, emails on failure | Windows Task Scheduler (needs the PC on) |
 | **`.kepub.epub`** | Kobo's native variant of EPUB: faster page turns, better rendering of image books | Plain EPUB, CBZ, PDF |
 | **rclone with your own Google login** | Works with a personal Drive | A Google *service account* can't create files in a personal "My Drive" (it has no storage quota) |
@@ -169,7 +173,9 @@ rclone copy out gdrive: --ignore-existing
 | **KCC pinned to `v12.1.1`** | Reproducible; `master` can change any day | Always using the latest code |
 | **Two runs a week** | Covers delayed releases; a break week costs ~3 minutes | Running every hour |
 
-Two quirks found while testing, which are already handled in the workflow:
+| **manga-downloader**, not `mloader` | MANGA Plus now gives the chapter list only to registered app clients. `mloader` (v1.1.12) doesn't register, so it got **zero chapters** and still exited "successfully". That was the cause of the first failed run on 2026-10-25. manga-downloader registers an anonymous device automatically and is actively maintained | `mloader` |
+
+Quirks found while testing, which are already handled in the workflow:
 
 - KCC fails with "Failed to open source file/directory" when given **relative** paths, so the workflow passes absolute paths (`$PWD/...`).
 - KCC's CLI crashes without `PySide6`, even though its CLI requirements file doesn't list it. Hence `PySide6-Essentials`.
@@ -204,8 +210,9 @@ Open the red run in **Actions**, click the failed step and read the last lines.
 
 | Failed step | Likely cause | Fix |
 |---|---|---|
-| Download | Chapter not free right now, MANGA Plus changed its API, or MANGA Plus blocks GitHub's servers | Try "Run workflow" later. Check for a newer mloader: <https://pypi.org/project/mloader/> |
-| Convert: "mloader produced no chapter" | Same as above | Same |
+| Download | MANGA Plus changed something, or it blocks GitHub's servers | Try "Run workflow" later. The workflow already takes the newest manga-downloader release; check its [issues](https://github.com/elboletaire/manga-downloader/issues) |
+| Convert: "No chapter downloaded" | Nothing free in the range, or the same causes as above | Check the `CHAPTERS` range, then as above |
+| Upload: "Secret RCLONE_DRIVE_TOKEN is missing" | Step 1.2 not done, or the name is misspelled | Redo 1.2 |
 | Convert: other error | New KCC behaviour | Go back to the last working `KCC_VERSION` |
 | Upload: `invalid_grant` / `401` | The Google token was revoked or expired | Redo 1.1–1.2, then overwrite the secret with **Update** |
 | Upload: `directory not found` | The OP folder was moved or deleted | Update `DRIVE_FOLDER_ID` |
@@ -224,9 +231,10 @@ Open the red run in **Actions**, click the failed step and read the last lines.
 
 ## 8. Doing it by hand on Windows
 
+Install manga-downloader on Windows (see [its README](https://github.com/elboletaire/manga-downloader#command-line)), then:
+
 ```powershell
-pip install mloader
-mloader https://mangaplus.shueisha.co.jp/titles/100020 --last -o raw
+manga-downloader https://mangaplus.shueisha.co.jp/titles/100020 1100-99999 --language en -o raw -t "One Piece {{.Number}}"
 ```
 
 Then open the `.cbz` in the KCC app: profile **Kobo Elipsa**, **Manga mode** on, format **EPUB**.
