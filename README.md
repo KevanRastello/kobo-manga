@@ -245,6 +245,9 @@ Quirks found while testing, which are already handled in the workflow:
 | 6th | ✓ | Nothing new → green run, "No new chapter this time" |
 | Metadata + `-r 2`, by hand | ✓ | Dummy chapter with a spread: title `One Piece #1196: …`, author Eiichiro Oda, EPUB3 + Calibre series tags, spread split **and** rotated |
 | 7th: redo `1196` | ✓ | `One Piece 1196 - The Love of the Suicidal is Worthless.kepub.epub` uploaded; old `One Piece 1196.kepub.epub` moved to `_old`. That chapter has 0 spreads |
+| 8th–9th: redo `1152-1173` + `1174-1195` | ✓ | All 44 Suwayomi files replaced. **Every chapter reported `spreads=0`** |
+| 10th: redo `1154,1167,1184,1191,1192` | ✓ | KCC had turned `'` and `!` into `_` in file names → the workflow now keeps the downloader's name. Old copies sent to the Drive trash; `_old` folder trashed |
+| Result | ✓ | `OP` holds **One Piece 1152 → 1196**, 45 files, all with title + metadata |
 
 ---
 
@@ -288,8 +291,9 @@ Open the red run in **Actions**, click the failed step and read the last lines.
    Still to do: run **Redo** on the older chapters (for example `1190-1195`) to replace the Suwayomi files.
    Still to check on the Kobo: does it group the chapters under the series *One Piece*? Both standard series tags are written, but Kobo's support for series in sideloaded books isn't confirmed.
 2. **Double-page spreads get cut on the Kobo**: ✅ `-r 2` (split + rotated full page) applies automatically to every wide page.
-   Still to check: whether MANGA Plus delivers spreads as one wide image (then this fixes it) or as two separate pages (then `spreads=0` and KCC can't see them).
-   Watch the `spreads=` notices while redoing older chapters, and compare with a chapter where you saw a cut spread.
+   **Finding (2026-10-25):** all 45 chapters 1152–1196 report `spreads=0`. So, as manga-downloader requests them (`viewer_mode=vertical` in its MANGA Plus code), MANGA Plus sends every spread as **two separate pages**, and KCC has no wide page to fix.
+   Next idea: test whether MANGA Plus's horizontal viewer mode returns spreads as one wide image. That needs a manga-downloader built with `viewer_mode=horizontal`, or a request to its author for an option.
+   If it does, `-r 2` takes care of the rest automatically.
 
 ---
 
