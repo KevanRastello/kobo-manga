@@ -44,8 +44,14 @@ jobs:
 
       - name: Download free chapters (MANGA Plus)
         run: |
-          manga-downloader "$MANGAPLUS_TITLE" "$CHAPTERS" --language en \
-            -o "$PWD/raw" -t "One Piece {{.Number}}"
+          # On failure, the last log lines go into one error annotation (shown on the run's summary page).
+          if ! manga-downloader "$MANGAPLUS_TITLE" "$CHAPTERS" --language en \
+               -o "$PWD/raw" -t "One Piece {{.Number}}" > dl.log 2>&1; then
+            cat dl.log
+            echo "::error title=manga-downloader failed::$(tail -c 3000 dl.log | sed ':a;N;$!ba;s/\n/%0A/g')"
+            exit 1
+          fi
+          cat dl.log
           find raw -type f -printf '::notice::downloaded %f\n'
 
       - name: Convert for Kobo Elipsa 2E
