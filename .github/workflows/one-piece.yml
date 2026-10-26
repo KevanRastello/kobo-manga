@@ -8,21 +8,32 @@ on:
 
 env:
   MANGAPLUS_TITLE: "https://mangaplus.shueisha.co.jp/titles/100020" # One Piece (English)
-  # Chapter numbers to ask for. Only the free ones (the newest ~3) actually download;
-  # the Drive upload skips the ones already there, so missed weeks catch up by themselves.
-  CHAPTERS: "1100-99999"
   DRIVE_FOLDER_ID: "1MLbtZhi0npGdKBkvJApSc_rJxz6vi9if"              # Drive: Mangas/OP
+  # Only used when the Drive folder has no numbered chapter yet: the first chapter to fetch.
+  FIRST_CHAPTER: "1196"
   # KCC: Kobo Elipsa profile (1404x1872, same screen as Elipsa 2E), -m = manga right-to-left,
   # upscale. Output is .kepub.epub. Double-page spreads: -r 0 split, 1 rotate, 2 both.
   KCC_FLAGS: "-p KoE -m -u -f EPUB -r 0"
   KCC_VERSION: "v12.1.1"
   MANGA_DOWNLOADER_NO_UPDATE_CHECK: "1"
+  # rclone remote "gdrive:" = the Drive folder above, logged in with your token.
+  RCLONE_CONFIG_GDRIVE_TYPE: drive
+  RCLONE_CONFIG_GDRIVE_SCOPE: drive
+  RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.RCLONE_DRIVE_TOKEN }}
+  RCLONE_CONFIG_GDRIVE_ROOT_FOLDER_ID: "1MLbtZhi0npGdKBkvJApSc_rJxz6vi9if"
 
 jobs:
   chapter:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Check Drive token
+        run: |
+          if [ -z "$RCLONE_CONFIG_GDRIVE_TOKEN" ]; then
+            echo "::error::Secret RCLONE_DRIVE_TOKEN is missing (README step 1.2)"
+            exit 1
+          fi
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -42,48 +53,38 @@ jobs:
           git clone -q --depth 1 --branch "$KCC_VERSION" https://github.com/ciromattia/kcc.git "$RUNNER_TEMP/kcc"
           pip install -q PySide6-Essentials -r "$RUNNER_TEMP/kcc/requirements-cli.txt"
 
-      - name: Download free chapters (MANGA Plus)
+      - name: Download new chapters (MANGA Plus)
         run: |
+          # Highest chapter already in Drive. Matches "One Piece 1196..." and the older
+          # Suwayomi names "Chapter 1195_ ...". Download only what comes after it.
+          last=$(rclone lsf gdrive: | grep -oP '^(?:One Piece|Chapter) \K\d+' | sort -n | tail -1 || true)
+          start=$(( ${last:-$((FIRST_CHAPTER - 1))} + 1 ))
+          echo "::notice::Drive has up to chapter ${last:-none}; looking for chapter $start and later"
+          mkdir -p raw
           # On failure, the last log lines go into one error annotation (shown on the run's summary page).
-          if ! manga-downloader "$MANGAPLUS_TITLE" "$CHAPTERS" --language en \
+          if ! manga-downloader "$MANGAPLUS_TITLE" "$start-99999" --language en \
                -o "$PWD/raw" -t "One Piece {{.Number}}" > dl.log 2>&1; then
             cat dl.log
             echo "::error title=manga-downloader failed::$(tail -c 3000 dl.log | sed ':a;N;$!ba;s/\n/%0A/g')"
             exit 1
           fi
           cat dl.log
-          echo "::notice title=manga-downloader output::$(tail -c 3000 dl.log | sed ':a;N;$!ba;s/\n/%0A/g')"
-          mkdir -p raw
           find raw -type f -printf '::notice::downloaded %f\n'
 
       - name: Convert for Kobo Elipsa 2E
         run: |
           mkdir -p out
-          found=0
           while IFS= read -r -d '' cbz; do
-            found=1
-            name=$(basename "$cbz" .cbz)   # "One Piece 1180"
+            name=$(basename "$cbz" .cbz)   # "One Piece 1196"
             rm -rf kcc_out
             python "$RUNNER_TEMP/kcc/kcc-c2e.py" $KCC_FLAGS -t "$name" -o "$PWD/kcc_out" "$cbz"
             mv kcc_out/*.kepub.epub "out/$name.kepub.epub"
           done < <(find "$PWD/raw" -name '*.cbz' -print0)
-          if [ "$found" = 0 ]; then
-            echo "::error::No chapter downloaded (none free right now, or MANGA Plus changed)"
-            exit 1
-          fi
           find out -type f -printf '::notice::converted %f (%s bytes)\n'
+          [ -n "$(ls out)" ] || echo "::notice::No new chapter this time (break week, or not released yet)"
 
-      - name: Upload to Google Drive (skips chapters already there)
-        env:
-          RCLONE_CONFIG_GDRIVE_TYPE: drive
-          RCLONE_CONFIG_GDRIVE_SCOPE: drive
-          RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.RCLONE_DRIVE_TOKEN }}
-          RCLONE_CONFIG_GDRIVE_ROOT_FOLDER_ID: ${{ env.DRIVE_FOLDER_ID }}
+      - name: Upload to Google Drive
         run: |
-          if [ -z "$RCLONE_CONFIG_GDRIVE_TOKEN" ]; then
-            echo "::error::Secret RCLONE_DRIVE_TOKEN is missing (README step 1.2)"
-            exit 1
-          fi
           set -o pipefail
           rclone copy out gdrive: --ignore-existing -v 2>&1 | tee rclone.log
-          grep -o 'One Piece [0-9.]*\.kepub\.epub: Copied' rclone.log | sed 's/^/::notice::uploaded /' || echo "::notice::nothing new to upload"
+          grep -oP '[^:]*\.kepub\.epub(?=: Copied)' rclone.log | sed 's/^/::notice::uploaded /' || true
