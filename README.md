@@ -5,17 +5,20 @@ Automatic weekly delivery of the latest **One Piece** chapter to a **Kobo Elipsa
 Every Sunday, GitHub Actions:
 
 1. downloads the newest chapter from **MANGA Plus** (Shueisha's official, free site),
-2. converts it with **KCC** (Kindle Comic Converter) into a `.kepub.epub` sized for the Elipsa 2E,
-3. uploads it to Google Drive → `Mangas/OP`,
+2. adds clean metadata (series, chapter number, chapter title, author),
+3. converts it with **KCC** (Kindle Comic Converter) into a `.kepub.epub` sized for the Elipsa 2E, with double-page spreads shown split **and** whole,
+4. uploads it to Google Drive → `Mangas/OP`,
 
 and the Kobo picks it up from Google Drive.
 
 ```
-MANGA Plus ──manga-downloader──▶ chapter.cbz ──KCC──▶ One Piece 1180.kepub.epub ──rclone──▶ Drive: Mangas/OP ──▶ Kobo
+MANGA Plus ─manga-downloader─▶ .cbz ─metadata.py─▶ .cbz + ComicInfo.xml ─KCC─▶ One Piece 1196 - <title>.kepub.epub ─rclone─▶ Drive: Mangas/OP ─▶ Kobo
 ```
 
-Everything is in one file: [`.github/workflows/one-piece.yml`](.github/workflows/one-piece.yml).
-The settings you might change are in its `env:` block at the top.
+| File | Role |
+|---|---|
+| [`.github/workflows/one-piece.yml`](.github/workflows/one-piece.yml) | The whole routine. The settings you might change are in its `env:` block at the top |
+| [`tools/metadata.py`](tools/metadata.py) | Writes the metadata before and after KCC |
 
 ---
 
@@ -96,13 +99,24 @@ sign in, go to `Mangas/OP` and download the chapter.
 
 | Situation | Result |
 |---|---|
-| New chapter is out | Uploaded as `One Piece <n>.kepub.epub` |
+| New chapter is out | Uploaded as `One Piece <n> - <chapter title>.kepub.epub` |
 | Several chapters were missed | All of them are fetched in the next run |
 | Break week, or nothing newer than Drive | Run is green with the notice "No new chapter this time" |
 | MANGA Plus or downloader broken / token missing or expired | Run goes **red** and GitHub **emails you** |
 
 Each run's summary page (Actions → click the run) lists short **notices**, for example:
-`Drive has up to chapter 1195; looking for chapter 1196 and later` → `downloaded One Piece 1196.cbz` → `converted …` → `uploaded One Piece 1196.kepub.epub`.
+`Drive has up to chapter 1195; looking for chapter 1196 and later` → `downloaded One Piece 1196 - The Love of the Suicidal is Worthless.cbz` →
+`… number=1196 title='…' spreads=0` → `converted …` → `uploaded …`.
+
+### Redo chapters (clean up old ones, or re-convert after a settings change)
+
+Actions → **One Piece weekly** → **Run workflow** → in the box **"Redo these chapters"** type a number or range, for example `1196` or `1190-1195` → **Run workflow**.
+
+- Those chapters are downloaded again and converted with the current settings and metadata.
+- Any older copy of the same chapter, under another name (for example `Chapter 1195_ Veakness.kepub.epub` from Suwayomi), is **moved** to `OP/_old`. **Nothing is deleted**; empty `_old` yourself once you're happy.
+- A copy with exactly the same name is overwritten.
+- Leave the box empty for a normal run (new chapters only).
+- On the Kobo, delete the old copy from the library and download the new file again.
 
 **Cost:** about 3–5 Actions minutes per run, around 30 minutes a month. Private repos get 2,000 free minutes a month.
 
@@ -130,25 +144,39 @@ First, the workflow asks Drive for the **highest chapter number already in `Mang
 rclone lsf gdrive: | grep -oP '^(?:One Piece|Chapter) \K\d+' | sort -n | tail -1
 ```
 
-This recognises the new names (`One Piece 1196.kepub.epub`) and the older Suwayomi names (`Chapter 1195_ Veakness.kepub.epub`).
+This recognises the new names (`One Piece 1196 - <title>.kepub.epub`) and the older Suwayomi names (`Chapter 1195_ Veakness.kepub.epub`).
 If the folder has none, it starts at `FIRST_CHAPTER`.
-Then it downloads every chapter **after** that one:
+Then it downloads every chapter **after** that one. In redo mode it downloads the range you typed instead.
 
 ```bash
-manga-downloader https://mangaplus.shueisha.co.jp/titles/100020 1197-99999 --language en -o raw -t "One Piece {{.Number}}"
+manga-downloader https://mangaplus.shueisha.co.jp/titles/100020 1197-99999 --language en -o raw \
+  -t "One Piece {{.Number}}{{if .SiteTitle}} - {{.SiteTitle}}{{end}}"
 ```
 
 - `100020` is One Piece on MANGA Plus, and `--language en` picks the English edition.
 - `1197-99999` means "1197 and everything after". Normally that's one chapter, but a missed week catches up by itself.
 - If nothing new exists, the tool says `No chapters found for the specified ranges`. The workflow treats that as a normal break week and the run stays green.
-- MANGA Plus only answers the chapter list to a registered app. manga-downloader registers an **anonymous device** by itself on each run, so no account is needed.
 - MANGA Plus only answers the full chapter list to a registered app. manga-downloader registers an **anonymous device** by itself on each run, so no account is needed.
-- `-t` sets the file name, which gives files like `raw/One Piece 1180.cbz`. A `.cbz` is just a zip of page images.
+- `-t` sets the file name **including the chapter title**: `raw/One Piece 1196 - The Love of the Suicidal is Worthless.cbz`. A `.cbz` is just a zip of page images.
 
-### Step 3: Convert for the Elipsa 2E
+### Step 3: Metadata, then convert for the Elipsa 2E
+
+**3a. Metadata in.** [`tools/metadata.py`](tools/metadata.py) `comicinfo` reads the file name and writes a `ComicInfo.xml` (the standard comic metadata file) into the `.cbz`:
+
+| Field | Value |
+|---|---|
+| Series | One Piece |
+| Number | 1196 |
+| Title | The Love of the Suicidal is Worthless |
+| Writer / Penciller | Eiichiro Oda |
+| Manga | YesAndRightToLeft |
+
+It also counts **double-page spreads** (pages wider than tall) and reports them in a notice (`spreads=…`).
+
+**3b. Convert.**
 
 ```bash
-kcc-c2e.py -p KoE -m -u -f EPUB -r 0 -t "One Piece 1180" -o kcc_out "<file>.cbz"
+kcc-c2e.py -p KoE -m -u -f EPUB -r 2 --metadatatitle 1 -o kcc_out "<file>.cbz"
 ```
 
 | Flag | Meaning |
@@ -157,12 +185,16 @@ kcc-c2e.py -p KoE -m -u -f EPUB -r 0 -t "One Piece 1180" -o kcc_out "<file>.cbz"
 | `-m` | Manga mode: pages turn **right-to-left**, the Japanese order |
 | `-u` | Upscale small pages to fill the screen |
 | `-f EPUB` | EPUB output. With a Kobo profile, KCC names it `.kepub.epub` (Kobo's faster format) |
-| `-r 0` | Double-page spreads are **split** into two pages. See [To fix](#7-to-fix-open-items) |
-| `-t` | Book title shown on the Kobo |
+| `-r 2` | Each double-page spread appears **twice**: split into two halves (read normally), **then** as one full page rotated 90° (turn the Kobo sideways to see the whole spread uncut). This happens automatically for every wide page |
+| `--metadatatitle 1` | Book title = series + number + chapter title from `ComicInfo.xml`: **`One Piece #1196: The Love of the Suicidal is Worthless`** |
 
-Each `One Piece <n>.cbz` becomes `One Piece <n>.kepub.epub`.
-If no `.cbz` was downloaded, the step stops with an error. That way a silent failure can't look like success.
-Each step also writes short **notices** (downloaded / converted / uploaded files). They appear on the run's summary page.
+From `ComicInfo.xml`, KCC writes into the e-book: the title, the author (*Eiichiro Oda*, instead of "KCC"), and the EPUB3 series tags (`belongs-to-collection` = One Piece, `group-position` = 1196).
+
+**3c. Metadata out.** `tools/metadata.py calibre` adds the same series as Calibre tags (`calibre:series`, `calibre:series_index`).
+Readers and tools understand one or the other format, so having both gives the Kobo the best chance to group the chapters as a series, in order.
+
+Each step writes short **notices** (downloaded / metadata / converted / uploaded). They appear on the run's summary page.
+`python tools/metadata.py test` is a self-check, and it runs on every run.
 
 ### Step 4: Upload to Drive
 
@@ -173,6 +205,7 @@ rclone copy out gdrive: --ignore-existing
 - rclone is configured entirely through `RCLONE_CONFIG_GDRIVE_*` environment variables, so no config file is needed.
 - `ROOT_FOLDER_ID` points directly at the `Mangas/OP` folder (ID `1MLbtZhi0npGdKBkvJApSc_rJxz6vi9if`), so `gdrive:` means "inside OP".
 - `--ignore-existing` skips a file whose name already exists in Drive. This is a second safety net on top of step 2.
+- In redo mode, older copies of the redone chapters are first moved to `OP/_old` with `rclone moveto`, then the new files are uploaded, overwriting any copy with the same name.
 - The Drive folder itself is the system's only "memory": no database, no state file.
 
 ---
@@ -188,7 +221,9 @@ rclone copy out gdrive: --ignore-existing
 | **"What's new" = highest chapter in Drive** | No database or state file to maintain. Deleting a chapter from Drive does *not* re-download it unless it was the highest one | Storing the last chapter number in the repo. A fixed range like `1100-99999`: the anonymous device sees **all** chapters, so that would download ~97 chapters every week |
 | **KCC pinned to `v12.1.1`** | Reproducible; `master` can change any day | Always using the latest code |
 | **Two runs a week** | Covers delayed releases; a break week costs ~3 minutes | Running every hour |
-
+| **Metadata from the file name** | The downloader names the file `One Piece <n> - <title>` but writes no metadata file, so the name is the one reliable source | Typing metadata by hand; Calibre (a large GUI app) |
+| **Spreads: `-r 2` (split + rotated)** | With the old `-r 0`, a spread was only shown as two halves, cutting the drawing in the middle. Now the halves keep reading smooth, and the rotated full page shows the spread whole | `-r 1` (rotated only: you'd turn the Kobo for every spread); `-r 0` (halves only) |
+| **Redo moves old files to `_old`, never deletes** | Reversible; you decide when to empty it | Deleting old copies |
 | **manga-downloader**, not `mloader` | MANGA Plus now gives the chapter list only to registered app clients. `mloader` (v1.1.12) doesn't register, so it got **zero chapters** and still exited "successfully". That was the cause of the first failed run on 2026-10-25. manga-downloader registers an anonymous device automatically and is actively maintained | `mloader` |
 
 Quirks found while testing, which are already handled in the workflow:
@@ -208,6 +243,8 @@ Quirks found while testing, which are already handled in the workflow:
 | 4th | ✓ | Drive had up to 1195 → **One Piece 1196** downloaded, converted (9.3 MB) and uploaded |
 | 5th | ✗ → fixed | Nothing new → "No chapters found" was treated as an error |
 | 6th | ✓ | Nothing new → green run, "No new chapter this time" |
+| Metadata + `-r 2`, by hand | ✓ | Dummy chapter with a spread: title `One Piece #1196: …`, author Eiichiro Oda, EPUB3 + Calibre series tags, spread split **and** rotated |
+| 7th: redo `1196` | ✓ | `One Piece 1196 - The Love of the Suicidal is Worthless.kepub.epub` uploaded; old `One Piece 1196.kepub.epub` moved to `_old`. That chapter has 0 spreads |
 
 ---
 
@@ -220,7 +257,8 @@ All of these are in the `env:` block of `.github/workflows/one-piece.yml`. Edit 
 | `MANGAPLUS_TITLE` | One Piece | Another series: copy its `https://mangaplus.shueisha.co.jp/titles/<id>` URL |
 | `DRIVE_FOLDER_ID` **and** `RCLONE_CONFIG_GDRIVE_ROOT_FOLDER_ID` | `Mangas/OP` | Another Drive folder: the ID is the last part of its URL. Change both lines |
 | `FIRST_CHAPTER` | `1196` | Where to start when the Drive folder has no numbered chapter yet |
-| `KCC_FLAGS` | `-p KoE -m -u -f EPUB -r 0` | Remove `-m` for left-to-right (Western) page order; `-r 1` rotate spreads, `-r 2` split **and** rotate; add `--nokepub` for plain `.epub` |
+| `NAME_TEMPLATE` | `One Piece {{.Number}} - {{.SiteTitle}}` | Another series name. Keep `<name> <number> - <title>`, because the metadata is read from it |
+| `KCC_FLAGS` | `-p KoE -m -u -f EPUB -r 2 --metadatatitle 1` | Remove `-m` for left-to-right (Western) page order; spreads `-r 0` halves only, `-r 1` rotated only; add `--nokepub` for plain `.epub`. Then use **Redo** to re-convert older chapters |
 | `KCC_VERSION` | `v12.1.1` | A newer tag from [KCC releases](https://github.com/ciromattia/kcc/releases) |
 | Schedule (`cron:` lines) | Sun 15:30 + Mon 03:00 UTC | Any time; [crontab.guru](https://crontab.guru) helps. Times are **UTC** |
 
@@ -235,7 +273,8 @@ Open the red run in **Actions**, click the failed step and read the last lines.
 | Failed step | Likely cause | Fix |
 |---|---|---|
 | Download | MANGA Plus changed something, or it blocks GitHub's servers | Try "Run workflow" later. The workflow already takes the newest manga-downloader release; check its [issues](https://github.com/elboletaire/manga-downloader/issues) |
-| Green but a chapter is missing | A chapter with a *higher* number is already in Drive, so the missing one is never asked for | Download it by hand (section 8), or temporarily move the higher one out of the folder and re-run |
+| Green but a chapter is missing | A chapter with a *higher* number is already in Drive, so the missing one is never asked for | Run with **Redo** = that chapter number |
+| Spread still looks cut | The chapter was converted before `-r 2`, or MANGA Plus served that spread as two separate pages (then `spreads=0` in the notice) | Redo the chapter. If the notice says `spreads=0`, see [To fix](#7-to-fix-open-items) |
 | Upload: "Secret RCLONE_DRIVE_TOKEN is missing" | Step 1.2 not done, or the name is misspelled | Redo 1.2 |
 | Convert: other error | New KCC behaviour | Go back to the last working `KCC_VERSION` |
 | Upload: `invalid_grant` / `401` | The Google token was revoked or expired | Redo 1.1–1.2, then overwrite the secret with **Update** |
@@ -245,11 +284,12 @@ Open the red run in **Actions**, click the failed step and read the last lines.
 
 ## 7. To fix (open items)
 
-1. **Clean metadata for every chapter (existing + new).**
-   Goal: consistent title, series name *One Piece*, series number = chapter number (so the Kobo groups the chapters in order), author *Eiichiro Oda*, chapter subtitle and cover.
-   It must also be applied to the chapters already in `Mangas/OP`.
-2. **Double-page spreads get cut on the Kobo.**
-   Goal: find the KCC setting (`-r` split/rotate/both, `--spreadshift`, cropping `-c`) that shows spreads cleanly on the Elipsa 2E, then re-convert older chapters with it.
+1. **Clean metadata for every chapter**: ✅ done for new chapters (step 3) and for 1196.
+   Still to do: run **Redo** on the older chapters (for example `1190-1195`) to replace the Suwayomi files.
+   Still to check on the Kobo: does it group the chapters under the series *One Piece*? Both standard series tags are written, but Kobo's support for series in sideloaded books isn't confirmed.
+2. **Double-page spreads get cut on the Kobo**: ✅ `-r 2` (split + rotated full page) applies automatically to every wide page.
+   Still to check: whether MANGA Plus delivers spreads as one wide image (then this fixes it) or as two separate pages (then `spreads=0` and KCC can't see them).
+   Watch the `spreads=` notices while redoing older chapters, and compare with a chapter where you saw a cut spread.
 
 ---
 
@@ -258,8 +298,9 @@ Open the red run in **Actions**, click the failed step and read the last lines.
 Install manga-downloader on Windows (see [its README](https://github.com/elboletaire/manga-downloader#command-line)), then:
 
 ```powershell
-manga-downloader https://mangaplus.shueisha.co.jp/titles/100020 1196 --language en -o raw -t "One Piece {{.Number}}"
+manga-downloader https://mangaplus.shueisha.co.jp/titles/100020 1196 --language en -o raw -t "One Piece {{.Number}} - {{.SiteTitle}}"
 ```
 
-(`1196` = the chapter you want; `1190-1196` for several.) Then open the `.cbz` in the KCC app: profile **Kobo Elipsa**, **Manga mode** on, format **EPUB**.
+(`1196` = the chapter you want; `1190-1196` for several.) Then run `python tools/metadata.py comicinfo "<file>.cbz"` and open the `.cbz` in the KCC app: profile **Kobo Elipsa**, **Manga mode** on, format **EPUB**, spreads "split and rotate".
+Easier: use **Redo** in the Actions tab (section 2).
 Upload the result to `Mangas/OP` by hand.
