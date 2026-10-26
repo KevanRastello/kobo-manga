@@ -5,27 +5,36 @@ on:
     - cron: "30 15 * * 0" # Sun 15:30 UTC = ~30 min after MANGA Plus release (Mon 00:00 JST)
     - cron: "0 3 * * 1"   # Mon 03:00 UTC retry, in case the release was late
   workflow_dispatch:       # "Run workflow" button in the Actions tab
+    inputs:
+      chapters:
+        description: "Redo these chapters (e.g. 1190-1196). Empty = only new chapters. Old copies are moved to OP/_old"
+        required: false
+        default: ""
 
 env:
   MANGAPLUS_TITLE: "https://mangaplus.shueisha.co.jp/titles/100020" # One Piece (English)
-  DRIVE_FOLDER_ID: "1MLbtZhi0npGdKBkvJApSc_rJxz6vi9if"              # Drive: Mangas/OP
   # Only used when the Drive folder has no numbered chapter yet: the first chapter to fetch.
   FIRST_CHAPTER: "1196"
-  # KCC: Kobo Elipsa profile (1404x1872, same screen as Elipsa 2E), -m = manga right-to-left,
-  # upscale. Output is .kepub.epub. Double-page spreads: -r 0 split, 1 rotate, 2 both.
-  KCC_FLAGS: "-p KoE -m -u -f EPUB -r 0"
+  # File name = "One Piece 1196 - <chapter title>". Metadata comes from it (tools/metadata.py).
+  NAME_TEMPLATE: "One Piece {{.Number}}{{if .SiteTitle}} - {{.SiteTitle}}{{end}}"
+  # KCC: Kobo Elipsa profile (1404x1872, same screen as Elipsa 2E), -m manga right-to-left,
+  # -u upscale, kepub output. -r 2 = each double-page spread is shown split in two halves
+  # AND as one rotated full page (turn the Kobo sideways). --metadatatitle 1 = title
+  # "One Piece #1196: <chapter title>" from ComicInfo.xml.
+  KCC_FLAGS: "-p KoE -m -u -f EPUB -r 2 --metadatatitle 1"
   KCC_VERSION: "v12.1.1"
   MANGA_DOWNLOADER_NO_UPDATE_CHECK: "1"
-  # rclone remote "gdrive:" = the Drive folder above, logged in with your token.
+  # rclone remote "gdrive:" = Drive folder Mangas/OP, logged in with your token.
   RCLONE_CONFIG_GDRIVE_TYPE: drive
   RCLONE_CONFIG_GDRIVE_SCOPE: drive
   RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.RCLONE_DRIVE_TOKEN }}
   RCLONE_CONFIG_GDRIVE_ROOT_FOLDER_ID: "1MLbtZhi0npGdKBkvJApSc_rJxz6vi9if"
+  REDO: ${{ inputs.chapters }}
 
 jobs:
   chapter:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check Drive token
         run: |
@@ -33,6 +42,8 @@ jobs:
             echo "::error::Secret RCLONE_DRIVE_TOKEN is missing (README step 1.2)"
             exit 1
           fi
+
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
@@ -52,18 +63,24 @@ jobs:
           # KCC, pinned. Its CLI still imports PySide6.QtCore, so the small Essentials wheel is needed.
           git clone -q --depth 1 --branch "$KCC_VERSION" https://github.com/ciromattia/kcc.git "$RUNNER_TEMP/kcc"
           pip install -q PySide6-Essentials -r "$RUNNER_TEMP/kcc/requirements-cli.txt"
+          python tools/metadata.py test
 
-      - name: Download new chapters (MANGA Plus)
+      - name: Download chapters (MANGA Plus)
         run: |
-          # Highest chapter already in Drive. Matches "One Piece 1196..." and the older
-          # Suwayomi names "Chapter 1195_ ...". Download only what comes after it.
-          last=$(rclone lsf gdrive: | grep -oP '^(?:One Piece|Chapter) \K\d+' | sort -n | tail -1 || true)
-          start=$(( ${last:-$((FIRST_CHAPTER - 1))} + 1 ))
-          echo "::notice::Drive has up to chapter ${last:-none}; looking for chapter $start and later"
+          if [ -n "$REDO" ]; then
+            range="$REDO"
+            echo "::notice::Redo mode: chapters $range"
+          else
+            # Highest chapter already in Drive ("One Piece 1196 - ..." or old Suwayomi "Chapter 1195_ ...").
+            last=$(rclone lsf gdrive: | grep -oP '^(?:One Piece|Chapter) \K\d+' | sort -n | tail -1 || true)
+            start=$(( ${last:-$((FIRST_CHAPTER - 1))} + 1 ))
+            range="$start-99999"
+            echo "::notice::Drive has up to chapter ${last:-none}; looking for chapter $start and later"
+          fi
           mkdir -p raw
           # On failure, the last log lines go into one error annotation (shown on the run's summary page).
-          if ! manga-downloader "$MANGAPLUS_TITLE" "$start-99999" --language en \
-               -o "$PWD/raw" -t "One Piece {{.Number}}" > dl.log 2>&1; then
+          if ! manga-downloader "$MANGAPLUS_TITLE" "$range" --language en \
+               -o "$PWD/raw" -t "$NAME_TEMPLATE" > dl.log 2>&1; then
             cat dl.log
             if grep -q "No chapters found for the specified ranges" dl.log; then
               echo "::notice::No new chapter this time (break week, or not released yet)"
@@ -75,19 +92,35 @@ jobs:
           cat dl.log
           find raw -type f -printf '::notice::downloaded %f\n'
 
-      - name: Convert for Kobo Elipsa 2E
+      - name: Add metadata and convert for Kobo Elipsa 2E
         run: |
           mkdir -p out
           while IFS= read -r -d '' cbz; do
-            name=$(basename "$cbz" .cbz)   # "One Piece 1196"
+            echo "::notice::$(python tools/metadata.py comicinfo "$cbz")"
             rm -rf kcc_out
-            python "$RUNNER_TEMP/kcc/kcc-c2e.py" $KCC_FLAGS -t "$name" -o "$PWD/kcc_out" "$cbz"
-            mv kcc_out/*.kepub.epub "out/$name.kepub.epub"
+            python "$RUNNER_TEMP/kcc/kcc-c2e.py" $KCC_FLAGS -o "$PWD/kcc_out" "$cbz"
+            epub=$(find kcc_out -name '*.kepub.epub' | head -1)
+            python tools/metadata.py calibre "$epub"
+            mv "$epub" out/
           done < <(find "$PWD/raw" -name '*.cbz' -print0)
           find out -type f -printf '::notice::converted %f (%s bytes)\n'
 
       - name: Upload to Google Drive
         run: |
           set -o pipefail
-          rclone copy out gdrive: --ignore-existing -v 2>&1 | tee rclone.log
+          if [ -n "$REDO" ]; then
+            # Move older copies of the same chapters (other names) to OP/_old, then upload (overwrite).
+            rclone lsf gdrive: --files-only > drive.txt
+            for f in out/*.kepub.epub; do
+              new=$(basename "$f")
+              n=$(grep -oP '^One Piece \K\d+' <<< "$new")
+              grep -P "^(?:One Piece|Chapter) $n(?:[ _.]|$)" drive.txt | grep -vxF "$new" | while IFS= read -r old; do
+                rclone moveto "gdrive:$old" "gdrive:_old/$old"
+                echo "::notice::moved old copy to _old: $old"
+              done || true   # no old copy = grep finds nothing, which is fine
+            done
+            rclone copy out gdrive: -v 2>&1 | tee rclone.log
+          else
+            rclone copy out gdrive: --ignore-existing -v 2>&1 | tee rclone.log
+          fi
           grep -oP '[^:]*\.kepub\.epub(?=: Copied)' rclone.log | sed 's/^/::notice::uploaded /' || true
