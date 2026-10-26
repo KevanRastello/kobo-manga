@@ -34,7 +34,7 @@ env:
 jobs:
   chapter:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120 # redo of ~20 chapters takes longer than a weekly run
     steps:
       - name: Check Drive token
         run: |
