@@ -97,8 +97,12 @@ sign in, go to `Mangas/OP` and download the chapter.
 | Situation | Result |
 |---|---|
 | New chapter is out | Uploaded as `One Piece <n>.kepub.epub` |
-| Break week, or chapter already in Drive | Run is green, nothing is uploaded |
-| No free chapter / MANGA Plus or downloader broken / token missing or expired | Run goes **red** and GitHub **emails you** |
+| Several chapters were missed | All of them are fetched in the next run |
+| Break week, or nothing newer than Drive | Run is green with the notice "No new chapter this time" |
+| MANGA Plus or downloader broken / token missing or expired | Run goes **red** and GitHub **emails you** |
+
+Each run's summary page (Actions → click the run) lists short **notices**, for example:
+`Drive has up to chapter 1195; looking for chapter 1196 and later` → `downloaded One Piece 1196.cbz` → `converted …` → `uploaded One Piece 1196.kepub.epub`.
 
 **Cost:** about 3–5 Actions minutes per run, around 30 minutes a month. Private repos get 2,000 free minutes a month.
 
@@ -118,15 +122,26 @@ The workflow runs on a fresh Ubuntu machine that GitHub lends you for a few minu
 | [KCC](https://github.com/ciromattia/kcc) `v12.1.1` | Converting the comic for the e-reader. Pinned to a release so an update can't silently break it |
 | `PySide6-Essentials` | KCC's command-line tool still imports one piece of its GUI library, so it is needed even without a screen |
 
-### Step 2: Download the free chapters
+### Step 2: Download the new chapters
+
+First, the workflow asks Drive for the **highest chapter number already in `Mangas/OP`**:
 
 ```bash
-manga-downloader https://mangaplus.shueisha.co.jp/titles/100020 1100-99999 --language en -o raw -t "One Piece {{.Number}}"
+rclone lsf gdrive: | grep -oP '^(?:One Piece|Chapter) \K\d+' | sort -n | tail -1
+```
+
+This recognises the new names (`One Piece 1196.kepub.epub`) and the older Suwayomi names (`Chapter 1195_ Veakness.kepub.epub`).
+If the folder has none, it starts at `FIRST_CHAPTER`.
+Then it downloads every chapter **after** that one:
+
+```bash
+manga-downloader https://mangaplus.shueisha.co.jp/titles/100020 1197-99999 --language en -o raw -t "One Piece {{.Number}}"
 ```
 
 - `100020` is One Piece on MANGA Plus, and `--language en` picks the English edition.
-- `1100-99999` asks for every chapter from 1100 up. MANGA Plus only gives the **newest ~3 chapters** for free, so those are the only ones that download. Locked chapters are skipped.
-  Asking for a range instead of only "the last one" means a missed week catches up by itself. Duplicates are avoided at upload (step 4).
+- `1197-99999` means "1197 and everything after". Normally that's one chapter, but a missed week catches up by itself.
+- If nothing new exists, the tool says `No chapters found for the specified ranges`. The workflow treats that as a normal break week and the run stays green.
+- MANGA Plus only answers the chapter list to a registered app. manga-downloader registers an **anonymous device** by itself on each run, so no account is needed.
 - MANGA Plus only answers the full chapter list to a registered app. manga-downloader registers an **anonymous device** by itself on each run, so no account is needed.
 - `-t` sets the file name, which gives files like `raw/One Piece 1180.cbz`. A `.cbz` is just a zip of page images.
 
@@ -157,7 +172,8 @@ rclone copy out gdrive: --ignore-existing
 
 - rclone is configured entirely through `RCLONE_CONFIG_GDRIVE_*` environment variables, so no config file is needed.
 - `ROOT_FOLDER_ID` points directly at the `Mangas/OP` folder (ID `1MLbtZhi0npGdKBkvJApSc_rJxz6vi9if`), so `gdrive:` means "inside OP".
-- `--ignore-existing` skips files already in Drive. This is the only "memory" the system needs: re-running never creates duplicates.
+- `--ignore-existing` skips a file whose name already exists in Drive. This is a second safety net on top of step 2.
+- The Drive folder itself is the system's only "memory": no database, no state file.
 
 ---
 
@@ -169,7 +185,7 @@ rclone copy out gdrive: --ignore-existing
 | **GitHub Actions** | Free minutes, runs while the PC is off, emails on failure | Windows Task Scheduler (needs the PC on) |
 | **`.kepub.epub`** | Kobo's native variant of EPUB: faster page turns, better rendering of image books | Plain EPUB, CBZ, PDF |
 | **rclone with your own Google login** | Works with a personal Drive | A Google *service account* can't create files in a personal "My Drive" (it has no storage quota) |
-| **Dedupe with `--ignore-existing`** | No database or state file to maintain | Storing the last chapter number in the repo |
+| **"What's new" = highest chapter in Drive** | No database or state file to maintain. Deleting a chapter from Drive does *not* re-download it unless it was the highest one | Storing the last chapter number in the repo. A fixed range like `1100-99999`: the anonymous device sees **all** chapters, so that would download ~97 chapters every week |
 | **KCC pinned to `v12.1.1`** | Reproducible; `master` can change any day | Always using the latest code |
 | **Two runs a week** | Covers delayed releases; a break week costs ~3 minutes | Running every hour |
 
@@ -180,11 +196,18 @@ Quirks found while testing, which are already handled in the workflow:
 - KCC fails with "Failed to open source file/directory" when given **relative** paths, so the workflow passes absolute paths (`$PWD/...`).
 - KCC's CLI crashes without `PySide6`, even though its CLI requirements file doesn't list it. Hence `PySide6-Essentials`.
 
-What was tested before the first real run:
-- The conversion step was run on a dummy chapter. It produced `One Piece 1180.kepub.epub` at 1404×1872, right-to-left, with the double-page spread split and the title set.
-- The "no chapter downloaded" case was checked: the step fails with a clear error.
+- manga-downloader doesn't create the output folder, and fails with `no such file or directory` without it. The workflow runs `mkdir -p raw` first.
 
-The download and upload steps only run for real on GitHub.
+### Test history (2026-10-25)
+
+| Run | Result | What we learned / changed |
+|---|---|---|
+| Dummy chapter, run by hand | ✓ | KCC gives 1404×1872, right-to-left, spread split, title set |
+| 1st GitHub run (mloader) | ✗ | mloader got 0 chapters → switched to manga-downloader |
+| 2nd–3rd | ✗ | Output folder missing → `mkdir -p raw`. The log showed chapters 1182–1196 all available |
+| 4th | ✓ | Drive had up to 1195 → **One Piece 1196** downloaded, converted (9.3 MB) and uploaded |
+| 5th | ✗ → fixed | Nothing new → "No chapters found" was treated as an error |
+| 6th | ✓ | Nothing new → green run, "No new chapter this time" |
 
 ---
 
@@ -195,7 +218,8 @@ All of these are in the `env:` block of `.github/workflows/one-piece.yml`. Edit 
 | Setting | Current value | Change it to… |
 |---|---|---|
 | `MANGAPLUS_TITLE` | One Piece | Another series: copy its `https://mangaplus.shueisha.co.jp/titles/<id>` URL |
-| `DRIVE_FOLDER_ID` | `Mangas/OP` | Another Drive folder: the ID is the last part of its URL |
+| `DRIVE_FOLDER_ID` **and** `RCLONE_CONFIG_GDRIVE_ROOT_FOLDER_ID` | `Mangas/OP` | Another Drive folder: the ID is the last part of its URL. Change both lines |
+| `FIRST_CHAPTER` | `1196` | Where to start when the Drive folder has no numbered chapter yet |
 | `KCC_FLAGS` | `-p KoE -m -u -f EPUB -r 0` | Remove `-m` for left-to-right (Western) page order; `-r 1` rotate spreads, `-r 2` split **and** rotate; add `--nokepub` for plain `.epub` |
 | `KCC_VERSION` | `v12.1.1` | A newer tag from [KCC releases](https://github.com/ciromattia/kcc/releases) |
 | Schedule (`cron:` lines) | Sun 15:30 + Mon 03:00 UTC | Any time; [crontab.guru](https://crontab.guru) helps. Times are **UTC** |
@@ -211,7 +235,7 @@ Open the red run in **Actions**, click the failed step and read the last lines.
 | Failed step | Likely cause | Fix |
 |---|---|---|
 | Download | MANGA Plus changed something, or it blocks GitHub's servers | Try "Run workflow" later. The workflow already takes the newest manga-downloader release; check its [issues](https://github.com/elboletaire/manga-downloader/issues) |
-| Convert: "No chapter downloaded" | Nothing free in the range, or the same causes as above | Check the `CHAPTERS` range, then as above |
+| Green but a chapter is missing | A chapter with a *higher* number is already in Drive, so the missing one is never asked for | Download it by hand (section 8), or temporarily move the higher one out of the folder and re-run |
 | Upload: "Secret RCLONE_DRIVE_TOKEN is missing" | Step 1.2 not done, or the name is misspelled | Redo 1.2 |
 | Convert: other error | New KCC behaviour | Go back to the last working `KCC_VERSION` |
 | Upload: `invalid_grant` / `401` | The Google token was revoked or expired | Redo 1.1–1.2, then overwrite the secret with **Update** |
@@ -234,8 +258,8 @@ Open the red run in **Actions**, click the failed step and read the last lines.
 Install manga-downloader on Windows (see [its README](https://github.com/elboletaire/manga-downloader#command-line)), then:
 
 ```powershell
-manga-downloader https://mangaplus.shueisha.co.jp/titles/100020 1100-99999 --language en -o raw -t "One Piece {{.Number}}"
+manga-downloader https://mangaplus.shueisha.co.jp/titles/100020 1196 --language en -o raw -t "One Piece {{.Number}}"
 ```
 
-Then open the `.cbz` in the KCC app: profile **Kobo Elipsa**, **Manga mode** on, format **EPUB**.
+(`1196` = the chapter you want; `1190-1196` for several.) Then open the `.cbz` in the KCC app: profile **Kobo Elipsa**, **Manga mode** on, format **EPUB**.
 Upload the result to `Mangas/OP` by hand.
